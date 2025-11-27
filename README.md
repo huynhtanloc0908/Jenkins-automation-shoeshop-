@@ -78,16 +78,6 @@ upcode →
 
 ---
 
-## 🗂 Repository Structure
-
-```
-jenkins-automation-shoeshop/
-│── Jenkinsfile
-│── README.md
-│── scripts/        # optional
-│── images/         # optional diagrams
-```
-
 ---
 
 ## 🧾 Jenkins Parameters
