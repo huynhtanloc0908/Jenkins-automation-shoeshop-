@@ -1,0 +1,202 @@
+// =======================
+// GLOBAL CONFIG
+// =======================
+
+APP_USER     = 'shoeshop'
+APP_NAME     = 'shoe-ShoppingCart'
+APP_VERSION  = '0.0.1-SNAPSHOT'
+APP_TYPE     = 'jar'
+PROCESS_NAME = "${APP_NAME}-${APP_VERSION}.${APP_TYPE}"
+
+FOLDER_MAIN   = "/data/${APP_USER}"
+FOLDER_DEPLOY = "/data/${APP_USER}/run"
+FOLDER_BACKUP = "/data/${APP_USER}/backups"
+
+BUILD_SCRIPT  = 'mvn clean install -DskipTests=true'
+GIT_LINK      = 'http://git.locdevops.tech/shoeshop/shoeshop.git'
+
+// =======================
+// UTILITY FUNCTIONS
+// =======================
+
+// Get process ID
+def getProcessId() {
+    return sh(
+        returnStdout: true,
+        script: """ ps -ef | grep ${PROCESS_NAME} | grep -v grep | awk '{print \$2}' """
+    ).trim()
+}
+
+// =======================
+// MAIN ACTIONS
+// =======================
+
+// START
+def startProcess() {
+    stage('start') {
+
+        sh("""
+            sudo su ${APP_USER} -c '
+                cd ${FOLDER_DEPLOY};
+                nohup java -jar ${PROCESS_NAME} > nohup.out 2>&1 &
+            '
+            sleep 3
+        """)
+
+        if(getProcessId() == "") {
+            error "❌ FAILED TO START APPLICATION"
+        }
+
+        echo "✔ ${PROCESS_NAME} started successfully"
+    }
+}
+
+// STOP
+def stopProcess() {
+    stage('stop') {
+        def pid = getProcessId()
+
+        if (pid != "") {
+            sh "sudo kill -9 ${pid}"
+            echo "✔ Process stopped (PID: ${pid})"
+        } else {
+            echo "ℹ No process running. Skip kill."
+        }
+    }
+}
+
+// BACKUP
+def backupProcess() {
+    stage('backup') {
+        def timestamp = new Date().format("ddMMyyyy_HHmm")
+        def zipName = "${APP_NAME}_${timestamp}.zip"
+
+        sh("""
+            sudo su ${APP_USER} -c '
+                cd ${FOLDER_MAIN};
+                zip -jr ${FOLDER_BACKUP}/${zipName} ${FOLDER_DEPLOY}
+            '
+        """)
+
+        echo "✔ Backup created: ${zipName}"
+    }
+}
+
+// CHECKOUT + BUILD + COPY
+def upcodeProcess() {
+
+    stage('checkout') {
+        if (!params.hash?.trim()) {
+            error "❌ Missing hash commit!"
+        }
+
+        checkout([
+            $class: 'GitSCM',
+            branches: [[name: params.hash]],
+            userRemoteConfigs: [[credentialsId: 'jenkins-gitlab-user', url: GIT_LINK]]
+        ])
+    }
+
+    stage('build') {
+        sh BUILD_SCRIPT
+    }
+
+    stage('deploy') {
+        sh """
+            sudo cp target/${PROCESS_NAME} ${FOLDER_DEPLOY}
+            sudo chown -R ${APP_USER}. ${FOLDER_DEPLOY}
+        """
+
+        echo "✔ New version deployed"
+    }
+}
+
+// ROLLBACK
+def rollbackProcess() {
+    stage('rollback') {
+
+        if (!params.rollback_version?.trim()) {
+            error "❌ rollback_version not selected"
+        }
+
+        sh("""
+            sudo su ${APP_USER} -c '
+                cd ${FOLDER_DEPLOY};
+                rm -rf *
+            '
+        """)
+
+        sh("""
+            sudo su ${APP_USER} -c '
+                cd ${FOLDER_BACKUP};
+                unzip ${params.rollback_version} -d ${FOLDER_DEPLOY}
+            '
+        """)
+
+        echo "✔ Rollback completed → ${params.rollback_version}"
+    }
+}
+
+// SHOW LAST N LINES
+def showlog_line() {
+    stage('showlog_line') {
+        sh """
+            sudo su ${APP_USER} -c '
+                cd ${FOLDER_DEPLOY} &&
+                tail -n ${params.line} nohup.out
+            '
+        """
+    }
+}
+
+// SEARCH KEYWORD IN LOG
+def showlog_keyword() {
+    stage('showlog_keyword') {
+        sh """
+            sudo su ${APP_USER} -c '
+                cd ${FOLDER_DEPLOY} &&
+                grep -n "${params.keyword}" nohup.out
+            '
+        """
+    }
+}
+
+// =======================
+// MAIN PIPELINE
+// =======================
+
+node(params.server) {
+
+    currentBuild.displayName = params.action
+
+    if (params.action == "start") {
+        startProcess()
+    }
+
+    if (params.action == "stop") {
+        stopProcess()
+    }
+
+    if (params.action == "upcode") {
+        currentBuild.displayName = "Update on ${params.server} / ${params.hash}"
+
+        backupProcess()
+        stopProcess()
+        upcodeProcess()
+        startProcess()
+    }
+
+    if (params.action == "rollback") {
+        stopProcess()
+        rollbackProcess()
+        startProcess()
+    }
+
+    if (params.action == "showlog_line") {
+        showlog_line()
+    }
+
+    if (params.action == "showlog_keyword") {
+        showlog_keyword()
+    }
+}
